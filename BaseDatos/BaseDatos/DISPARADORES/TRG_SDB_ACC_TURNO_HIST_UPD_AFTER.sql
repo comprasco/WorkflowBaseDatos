@@ -1,0 +1,113 @@
+--------------------------------------------------------
+--  DDL for Trigger TRG_SDB_ACC_TURNO_HIST_UPD_AFTER 
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE TRIGGER "TRG_SDB_ACC_TURNO_HIST_UPD_AFTER" 
+-- Crear registro de Bitacora en la tabla SDB_ACC_BITACORA_BLOQUEO, para el bloqueo de turnos de la tabla SDB_ACC_TURNO_HISTORIA
+AFTER UPDATE ON SDB_ACC_TURNO_HISTORIA
+FOR EACH ROW
+DECLARE   
+	VUSER_XCEP				EXCEPTION;
+	PRAGMA EXCEPTION_INIT (VUSER_XCEP,-20001 );
+	VID_TURNO				  SDB_ACC_TURNO_HISTORIA.ID_TURNO%TYPE;
+  VTURNO_BLOQUEO    SDB_ACC_TURNO_HISTORIA.ID_TURNO%TYPE;
+  VID_SOLICITUD 	  SDB_ACC_TURNO_HISTORIA.ID_SOLICITUD%TYPE;
+  VESTADO           SDB_ACC_BITACORA_BLOQUEO.ESTADO%TYPE;
+  VID_BITACORA_BLOQUEO SDB_ACC_BITACORA_BLOQUEO.ID_BITACORA_BLOQUEO%TYPE;
+  RRETORNO          INTEGER;
+  VRETORNO          INTEGER;
+  RMENSAJE          VARCHAR2(500);
+  VMENSAJE          VARCHAR2(500);
+	VPENDIENTE				NUMBER;
+  VORDEN            INTEGER;
+  njob              NUMBER(15);
+  sProcedimiento    VARCHAR2(1000);
+  VCONTEO           integer := 0;
+  VCONTEO_0463      integer := 0;
+  VCONTEO_MAT       integer := 0;
+  VSQL          VARCHAR2(4000);
+  vid_bitacora_nva    SDB_ACC_BITACORA_BLOQUEO.ID_BITACORA_BLOQUEO%type;
+/*
+CurBloqueados SYS_REFCURSOR;
+
+TYPE TYP_REC IS RECORD
+    (
+     ID_CIRCULO    SDB_BNG_PREDIO_REGISTRO.ID_CIRCULO%TYPE, 
+     ID_MATRICULA  SDB_BNG_PREDIO_REGISTRO.ID_MATRICULA%TYPE
+    );
+    VREC TYP_REC;
+*/
+/* AND NOT EXISTS (SELECT 1 
+						FROM SDB_ACC_BITACORA_BLOQUEO BQ 
+						WHERE BQ.ID_CIRCULO = MAT.ID_CIRCULO 
+							AND BQ.ID_MATRICULA = MAT.ID_MATRICULA 
+							AND BQ.ESTADO = 'BLOQUEADO' 
+							AND BQ.ID_TURNO_BLOQUEO = MAT.ID_TURNO);*/
+
+/*CURSOR CurDesBloqueados IS
+	SELECT DISTINCT ID_CIRCULO,ID_MATRICULA
+	FROM SDB_ACC_SOLICITUD_MATRICULA_ACTO MAT
+	WHERE MAT.ID_TURNO = VID_TURNO
+    AND MAT.ESTADO != 'I'
+		AND EXISTS (SELECT 1 
+						FROM SDB_ACC_BITACORA_BLOQUEO BQ 
+						WHERE BQ.ID_CIRCULO = MAT.ID_CIRCULO 
+							AND BQ.ID_MATRICULA = MAT.ID_MATRICULA 
+							AND BQ.ESTADO = 'BLOQUEADO' 
+							AND BQ.ID_TURNO_BLOQUEO = MAT.ID_TURNO);*/
+
+BEGIN
+--DBMS_OUTPUT.PUT_LINE('TRG_SDB_ACC_TURNO_HIST_INS_AFTER:: NEW.ID_TURNO_HISTORIA:' ||:NEW.ID_TURNO_HISTORIA||', NEW.ESTADO_ACTIVIDAD'||:NEW.ESTADO_ACTIVIDAD||', NEW.ID_TURNO:'||:NEW.ID_TURNO);
+--27/01/2022 se elimina codigo de bloqueo y desbloqueo de matriculas, para hacerlo en la creación del turno.
+
+  IF UPDATING('ESTADO_ACTIVIDAD') THEN 
+    UPDATE SDB_ACC_SOLICITUD_ETAPA_ACTUAL SET
+      ESTADO = 'I'
+    WHERE ID_SOLICITUD = :NEW.ID_SOLICITUD
+      AND ID_TURNO = NVL(:NEW.ID_TURNO,'-1');
+    VPENDIENTE := sql%rowcount;
+    --dbms_output.PUT_LINE('TRG_SDB_ACC_TURNO_HIST_UPD_AFTER '||VPENDIENTE);
+    IF VPENDIENTE = 0 THEN
+      INSERT INTO SDB_ACC_SOLICITUD_ETAPA_ACTUAL (ID_SOLICITUD,ID_TURNO,ESTADO)
+      VALUES (:NEW.ID_SOLICITUD,NVL(:NEW.ID_TURNO,'-1'),'I');
+      --dbms_output.PUT_LINE('TRG_SDB_ACC_TURNO_HIST_UPD_AFTER INSERT INTO SDB_ACC_SOLICITUD_ETAPA_ACTUAL '||VPENDIENTE||' '||:NEW.ID_SOLICITUD||' '||:NEW.ID_TURNO);
+    END IF;
+  
+    BEGIN
+      sProcedimiento := 'DECLARE  RRETORNO INTEGER; '||
+      'RMENSAJE VARCHAR2(500); '||
+      'PID_SOLICITUD VARCHAR2(200); '|| 
+      'PUSUARIO_ACCION VARCHAR2(100); '||
+      'PIP_ACCION VARCHAR2(200); '||
+      'BEGIN '||
+      'PID_SOLICITUD := '''||:NEW.ID_SOLICITUD ||''';' || 
+      'PUSUARIO_ACCION := ''' || NVL(:NEW.ID_USUARIO_MODIFICACION,USER)|| ''';' ||
+      'PIP_ACCION := '''||NVL(:NEW.IP_MODIFICACION,PKG_TRANSVERSALES.FUNC_IP_ACCION())||''';' ||
+      'PKG_REGISTRO.PROC_ACTUALIZAR_ETAPA( PID_SOLICITUD => PID_SOLICITUD, PID_USUARIO_ACCION => PUSUARIO_ACCION, PIP_ACCION => PIP_ACCION, PRETORNO => RRETORNO, PMENSAJE => RMENSAJE ); COMMIT; END;';
+  --    dbms_output.PUT_LINE(sProcedimiento);
+      dbms_job.submit(job => njob,
+                         what => sProcedimiento,
+                         next_date => SYSDATE + 1/(24*60*60), -- Lo programa para dentro un segundo
+                         interval => NULL); -- Sin repeticion
+      --dbms_output.PUT_LINE('TRG_SDB_ACC_TURNO_HIST_UPD_AFTER JPB njob:'||to_char(njob));
+      --NOTA: Para que funcione el JOB es necesario que cuando se haga el update a SDB_ACC_TURNO_HISTORIA se haga un commit inmediatamente
+    --  --COMMIT;
+    END; 
+    
+    IF NVL(:NEW.ID_TURNO,'NULL') <> 'NULL' THEN
+      BEGIN
+      sProcedimiento := 'DECLARE RRETORNO INTEGER; RMENSAJE VARCHAR2(500); BEGIN PKG_REGISTRO.PROC_ACTUALIZAR_ETAPA_TURNO(''' || :NEW.ID_TURNO ||''','''|| :NEW.ID_USUARIO_CREACION||''','''||:NEW.IP_CREACION||''',RRETORNO,RMENSAJE); COMMIT; END;';
+      dbms_job.submit(job => njob,
+                         what => sProcedimiento,
+                         next_date => SYSDATE + 1/(24*60*60), -- Lo programa para dentro un segundo
+                         interval => NULL); -- Sin repeticion
+      --COMMIT;
+      END;    
+    END IF;
+  END IF;
+
+	EXCEPTION WHEN OTHERS THEN
+	RAISE VUSER_XCEP;
+END TRG_SDB_ACC_TURNO_HIST_UPD_AFTER;
+/
+ALTER TRIGGER "TRG_SDB_ACC_TURNO_HIST_UPD_AFTER" ENABLE;
